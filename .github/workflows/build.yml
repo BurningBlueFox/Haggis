@@ -1,0 +1,29 @@
+name: Build
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install CMake
+        run: |
+          archive=cmake-4.5.1-linux-x86_64.tar.gz
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/Kitware/CMake/releases/download/v4.5.1/$archive"
+          echo "83b71181fb62b4fe8f26067a9321448572e7a43bd04ff6c7f54a24c33698f16d  $archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/${archive%.tar.gz}/bin" >> "$GITHUB_PATH"
+      - name: Configure
+        run: cmake -S . -B build
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Run
+        run: ./build/haggis
