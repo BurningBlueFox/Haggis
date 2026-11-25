@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Haggis</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #111827;
+      color: #f3f4f6;
+      font: 1rem system-ui, sans-serif;
+    }
+    main { width: min(90vw, 960px); }
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: #030712;
+      border: 1px solid #374151;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Haggis</h1>
+    <canvas id="canvas" width="960" height="540" aria-label="Haggis viewport"></canvas>
+    <p id="status" role="status">Loading Haggis…</p>
+    <noscript>Enable JavaScript to run Haggis.</noscript>
+  </main>
+  <script>
+    const statusElement = document.getElementById("status");
+    var Module = {
+      canvas: document.getElementById("canvas"),
+      print(message) { statusElement.textContent = message; },
+      onAbort() { statusElement.textContent = "Haggis could not start."; }
+    };
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>
