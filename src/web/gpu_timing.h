@@ -7,48 +7,38 @@
 
 namespace haggis::web {
 
-struct CompletedFrame {
+struct GpuSample {
     std::uint32_t compute_groups;
     std::optional<double> render_ms;
     std::optional<double> compute_ms;
-    double queue_ms = 0;
 };
 
-// One measured submission can be outstanding. Allow one more draw to queue behind it.
+// Samples are optional. A busy readback buffer only skips a timing sample.
 class GpuTiming {
 public:
     void initialize(const Gpu& gpu);
-    void submit(Gpu& gpu, const wgpu::CommandEncoder& encoder, std::uint32_t compute_groups);
 
-    [[nodiscard]] bool busy() const { return waiting_; }
-    [[nodiscard]] bool can_submit() const { return !waiting_ || !draw_queued_; }
     [[nodiscard]] bool has_timestamps() const { return static_cast<bool>(queries_); }
-    [[nodiscard]] const wgpu::PassTimestampWrites* render_timestamps() const
-    {
-        return !busy() && has_timestamps() ? &render_stamp_ : nullptr;
-    }
+    [[nodiscard]] bool should_sample(std::uint32_t compute_groups);
+    [[nodiscard]] const wgpu::PassTimestampWrites* render_timestamps() const { return &render_stamp_; }
+    [[nodiscard]] const wgpu::PassTimestampWrites* compute_timestamps() const { return &compute_stamp_; }
 
-    [[nodiscard]] const wgpu::PassTimestampWrites* compute_timestamps() const
-    {
-        return !busy() && has_timestamps() ? &compute_stamp_ : nullptr;
-    }
-    [[nodiscard]] std::optional<CompletedFrame> take_completed();
+    void encode_readback(const wgpu::CommandEncoder& encoder, std::uint32_t groups) const;
+    void read_sample(std::uint32_t groups);
+    [[nodiscard]] std::optional<GpuSample> take_sample();
 
 private:
-    void encode_timestamp_copy(const wgpu::CommandEncoder& encoder, std::uint32_t groups) const;
-    void read_timestamps(Gpu& gpu, std::uint32_t groups);
-    void complete_timestamp_read(std::uint32_t groups);
-    void wait_for_queue(Gpu& gpu, std::uint32_t groups);
-    void complete(CompletedFrame frame);
+    void complete_read(std::uint32_t groups);
 
     wgpu::QuerySet queries_;
     wgpu::Buffer resolved_;
     wgpu::Buffer readback_;
     wgpu::PassTimestampWrites render_stamp_{};
     wgpu::PassTimestampWrites compute_stamp_{};
-    bool waiting_ = false;
-    bool draw_queued_ = false;
-    std::optional<CompletedFrame> completed_;
+    bool reading_ = false;
+    unsigned render_countdown_ = 0;
+    unsigned compute_countdown_ = 0;
+    std::optional<GpuSample> sample_;
 };
 
 }
