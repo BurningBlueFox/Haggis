@@ -1,9 +1,6 @@
-#include "greeting.h"
-
-#include <iostream>
+#include "web/app.h"
 
 int main()
 {
-    std::cout << greeting() << '\n';
-    return 0;
+    haggis::web::run();
 }
