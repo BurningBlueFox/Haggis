@@ -15,41 +15,50 @@ public:
     [[nodiscard]] int target_fps() const { return fps_; }
     [[nodiscard]] double period() const { return 1000.0 / fps_; }
 
-    // Called once per measurement window. A promotion needs two healthy windows.
-    void tune(double display_p95, double frame_p95, double render_ms)
+    // Check the current tier once per measurement window. Require two healthy
+    // windows before stepping up to avoid bouncing between tiers.
+    void update_target(double display_interval_ms, double frame_p95_ms, double render_ms)
     {
-        auto sustainable = [&](int fps) {
-            const double interval = 1000.0 / fps;
-            return display_p95 <= 1.12 * interval && render_ms <= 0.8 * interval;
+        const auto supports = [&](int fps) {
+            const double frame_ms = 1000.0 / fps;
+            return display_interval_ms <= 1.12 * frame_ms && render_ms <= 0.8 * frame_ms;
         };
-        // At 144 Hz, drawing at 120 FPS naturally leaves occasional two-refresh gaps.
-        const double ticks = std::ceil((period() - 0.25) / std::max(0.1, display_p95));
-        const bool late = frame_p95 > 1.12 * std::max(period(), ticks * display_p95);
-        lend_ = !late && sustainable(fps_);
-        const int ceiling = sustainable(240) ? 240 : sustainable(120) ? 120 : 60;
-        if (fps_ > ceiling || late) {
+        // A 120 FPS draw loop on a 144 Hz display can take two refreshes between draws.
+        const double refreshes = std::ceil((period() - 0.25) / std::max(0.1, display_interval_ms));
+        const double expected_gap = std::max(period(), refreshes * display_interval_ms);
+        const bool missed_target = frame_p95_ms > 1.12 * expected_gap;
+        const int ceiling = supports(240) ? 240 : (supports(120) ? 120 : 60);
+        lend_ = !missed_target && supports(fps_);
+
+        if (fps_ > ceiling || missed_target) {
             fps_ = fps_ == 240 ? 120 : 60;
             healthy_windows_ = 0;
-        } else if (ceiling > fps_ && ++healthy_windows_ >= 2) {
-            fps_ = fps_ == 60 ? 120 : 240;
+            return;
+        }
+
+        if (fps_ == ceiling) {
             healthy_windows_ = 0;
-        } else if (ceiling == fps_) {
+            return;
+        }
+
+        if (++healthy_windows_ == 2) {
+            fps_ = fps_ == 60 ? 120 : 240;
             healthy_windows_ = 0;
         }
     }
 
     // Credit accrues only for active work. Bound catch-up after a slow frame.
-    void accrue(double elapsed)
+    void add_frame_credit(double elapsed)
     {
         const double earned = inference_share * std::clamp(elapsed, 0.0, 2 * period());
         const double capacity = std::max(0.5 * period(), ms_per_group_);
         credit_ = std::min(capacity, credit_ + earned);
     }
 
-    [[nodiscard]] std::uint32_t take_chunk(double render_ms) const
+    [[nodiscard]] std::uint32_t workgroups_for(double render_ms) const
     {
-        const double base = inference_share * period();
-        const double slack = std::max(base, 0.9 * period() - render_ms);
+        const double reserved_ms = inference_share * period();
+        const double slack = std::max(reserved_ms, period() - reserved_ms - render_ms);
         const double allowance = lend_ ? slack : std::min(slack, credit_);
         const auto affordable = std::floor(allowance / ms_per_group_);
         // One indivisible workgroup can cost more than a frame's allowance.
@@ -58,7 +67,7 @@ public:
         return static_cast<std::uint32_t>(std::clamp(affordable, minimum, double(growth_limit_)));
     }
 
-    void completed(std::uint32_t groups, double elapsed_ms)
+    void record_completion(std::uint32_t groups, double elapsed_ms)
     {
         if (groups == 0 || !std::isfinite(elapsed_ms) || elapsed_ms <= 0) {
             return;

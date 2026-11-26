@@ -6,7 +6,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(EMSCRIPTEN)
-    add_executable(haggis src/web_main.cpp)
+    add_executable(haggis
+        src/web_main.cpp
+        src/web/app.cpp
+        src/web/gpu.cpp
+        src/web/gpu_timing.cpp
+        src/web/inference.cpp
+        src/web/triangle.cpp
+    )
+    target_include_directories(haggis PRIVATE src)
     target_compile_options(haggis PRIVATE --use-port=emdawnwebgpu)
     target_link_options(haggis PRIVATE --use-port=emdawnwebgpu)
     set(web_shell "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html")
