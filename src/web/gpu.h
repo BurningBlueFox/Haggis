@@ -26,6 +26,7 @@ public:
 
 private:
     void request_device(const wgpu::Adapter& adapter, std::function<void()> on_ready);
+    [[nodiscard]] wgpu::DeviceDescriptor make_device_descriptor(const wgpu::Adapter& adapter);
     bool configure_canvas(const wgpu::Adapter& adapter);
 
     wgpu::Instance instance_;

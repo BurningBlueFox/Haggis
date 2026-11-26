@@ -29,21 +29,7 @@ void Gpu::connect(std::function<void()> on_ready)
 
 void Gpu::request_device(const wgpu::Adapter& adapter, std::function<void()> on_ready)
 {
-    constexpr auto timestamp = wgpu::FeatureName::TimestampQuery;
-    wgpu::DeviceDescriptor descriptor;
-    if (adapter.HasFeature(timestamp)) {
-        descriptor.requiredFeatures = &timestamp;
-        descriptor.requiredFeatureCount = 1;
-    }
-    descriptor.SetUncapturedErrorCallback(
-        +[](const wgpu::Device&, wgpu::ErrorType, wgpu::StringView detail, Gpu* gpu) {
-            gpu->fail("WebGPU reported an error. See the browser console.", detail);
-        }, this);
-    descriptor.SetDeviceLostCallback(asynchronous,
-        [this](const wgpu::Device&, wgpu::DeviceLostReason, wgpu::StringView detail) {
-            fail("WebGPU device lost. Reload to restart.", detail);
-        });
-
+    const auto descriptor = make_device_descriptor(adapter);
     adapter.RequestDevice(&descriptor, asynchronous,
         [this, adapter, on_ready = std::move(on_ready)](wgpu::RequestDeviceStatus status,
                                                        wgpu::Device device, wgpu::StringView detail) {
@@ -57,6 +43,25 @@ void Gpu::request_device(const wgpu::Adapter& adapter, std::function<void()> on_
                 on_ready();
             }
         });
+}
+
+wgpu::DeviceDescriptor Gpu::make_device_descriptor(const wgpu::Adapter& adapter)
+{
+    static constexpr auto timestamp = wgpu::FeatureName::TimestampQuery;
+    wgpu::DeviceDescriptor descriptor;
+    if (adapter.HasFeature(timestamp)) {
+        descriptor.requiredFeatures = &timestamp;
+        descriptor.requiredFeatureCount = 1;
+    }
+    descriptor.SetUncapturedErrorCallback(
+        +[](const wgpu::Device&, wgpu::ErrorType, wgpu::StringView detail, Gpu* gpu) {
+            gpu->fail("WebGPU reported an error. See the browser console.", detail);
+        }, this);
+    descriptor.SetDeviceLostCallback(asynchronous,
+        [this](const wgpu::Device&, wgpu::DeviceLostReason, wgpu::StringView detail) {
+            fail("WebGPU device lost. Reload to restart.", detail);
+        });
+    return descriptor;
 }
 
 bool Gpu::configure_canvas(const wgpu::Adapter& adapter)

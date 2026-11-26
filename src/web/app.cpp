@@ -16,10 +16,16 @@
 namespace haggis::web {
 namespace {
 
-constexpr double frame_tolerance_ms = 0.25;
-constexpr double metrics_interval_ms = 1000;
+constexpr double metrics_interval_ms = FrameBudget::ms_per_second;
 constexpr double suspended_after_ms = 250;
 constexpr double minimum_measured_cost_ms = 0.05;
+constexpr double initial_render_estimate_ms = 1.0;
+constexpr double animation_wrap_seconds = 3600.0;
+constexpr unsigned render_sample_interval_frames = 30;
+constexpr std::size_t metrics_text_capacity = 192;
+constexpr std::size_t sample_capacity = 512;
+constexpr std::size_t frame_percentile = 95;
+constexpr std::size_t percent_scale = 100;
 
 EM_JS(void, show_metrics, (const char* text), {
     document.getElementById('metrics').textContent = UTF8ToString(text);
@@ -39,7 +45,8 @@ public:
     double take_p95(double fallback)
     {
         if (!size_) return fallback;
-        const auto index = (95 * size_ + 99) / 100 - 1;
+        const auto rank = (frame_percentile * size_ + percent_scale - 1) / percent_scale;
+        const auto index = rank - 1;
         std::nth_element(values_.begin(), values_.begin() + index, values_.begin() + size_);
         size_ = 0;
         return values_[index];
@@ -48,7 +55,7 @@ public:
     void clear() { size_ = 0; }
 
 private:
-    std::array<double, 512> values_{};
+    std::array<double, sample_capacity> values_{};
     std::size_t size_ = 0;
 };
 
@@ -59,6 +66,8 @@ public:
 private:
     void initialize();
     bool animate(double now);
+    void observe_refresh(double now);
+    double record_draw(double now);
     void submit_frame(double now, std::uint32_t groups);
     std::uint32_t schedule_compute(double elapsed_ms);
     void collect_completed_frame();
@@ -75,7 +84,7 @@ private:
     double previous_draw_ = 0;
     double next_draw_ = 0;
     double window_start_ = 0;
-    double render_ms_ = 1;
+    double render_ms_ = initial_render_estimate_ms;
     double compute_ms_ = 0;
     std::uint64_t completed_vectors_ = 0;
     unsigned frames_until_render_sample_ = 0;
@@ -103,28 +112,43 @@ bool App::animate(double now)
 {
     if (gpu_.failed()) return false;
 
-    if (!previous_tick_ || now - previous_tick_ > suspended_after_ms) {
-        reset_metrics(now);
-    } else {
-        display_intervals_.add(now - previous_tick_);
-    }
-    previous_tick_ = now;
+    observe_refresh(now);
     collect_completed_frame();
     if (now - window_start_ >= metrics_interval_ms) report_metrics(now);
 
-    if (now + frame_tolerance_ms < next_draw_ || !timing_.can_submit()) return true;
+    if (now + FrameBudget::frame_tolerance_ms < next_draw_ || !timing_.can_submit()) return true;
 
-    const double elapsed = previous_draw_ ? now - previous_draw_ : budget_.period();
-    if (previous_draw_) frame_intervals_.add(elapsed);
+    const double elapsed_ms = record_draw(now);
+    const auto groups = schedule_compute(elapsed_ms);
+    submit_frame(now, groups);
+    return !gpu_.failed();
+}
+
+void App::observe_refresh(double now)
+{
+    const double elapsed_ms = now - previous_tick_;
+    if (!previous_tick_ || elapsed_ms > suspended_after_ms) {
+        reset_metrics(now);
+    } else {
+        display_intervals_.add(elapsed_ms);
+    }
+    previous_tick_ = now;
+}
+
+double App::record_draw(double now)
+{
+    const double period_ms = budget_.period();
+    const double elapsed_ms = previous_draw_ ? now - previous_draw_ : period_ms;
+    if (previous_draw_) frame_intervals_.add(elapsed_ms);
     previous_draw_ = now;
 
-    // Keep the target cadence when the display has a different refresh rate.
-    const double period = budget_.period();
-    const double missed = std::max(0.0, std::floor((now - next_draw_) / period));
-    next_draw_ += (missed + 1) * period;
-
-    submit_frame(now, schedule_compute(elapsed));
-    return !gpu_.failed();
+    // Advance by one period normally. Skip missed slots without shifting the cadence.
+    next_draw_ += period_ms;
+    if (next_draw_ <= now) {
+        const double missed = std::floor((now - next_draw_) / period_ms) + 1;
+        next_draw_ += missed * period_ms;
+    }
+    return elapsed_ms;
 }
 
 std::uint32_t App::schedule_compute(double elapsed_ms)
@@ -135,7 +159,7 @@ std::uint32_t App::schedule_compute(double elapsed_ms)
 
     // A render-only sample isolates render time when only queue timing is available.
     if (!timing_.has_timestamps() && frames_until_render_sample_ == 0) {
-        frames_until_render_sample_ = 30;
+        frames_until_render_sample_ = render_sample_interval_frames;
         return 0;
     }
     if (frames_until_render_sample_) --frames_until_render_sample_;
@@ -150,7 +174,7 @@ void App::submit_frame(double now, std::uint32_t groups)
         return;
     }
 
-    const auto seconds = static_cast<float>(std::fmod(now / 1000, 3600));
+    const auto seconds = static_cast<float>(std::fmod(now / FrameBudget::ms_per_second, animation_wrap_seconds));
     const auto encoder = gpu_.device().CreateCommandEncoder();
     triangle_.encode_draw(gpu_, encoder, texture, seconds, timing_.render_timestamps());
     // Queue order lets the draw read the previous color before compute updates it.
@@ -195,11 +219,11 @@ void App::report_metrics(double now)
     render_ms_ = render_times_.take_p95(render_ms_);
     budget_.update_target(display, frame, render_ms_);
 
-    char metrics[192];
+    char metrics[metrics_text_capacity];
     std::snprintf(metrics, sizeof(metrics),
         "Target %d FPS  ·  Frame p95 %.1f ms  ·  %.0f vectors/s  ·  Compute %.1f%%  ·  %s",
-        budget_.target_fps(), frame, 1000 * completed_vectors_ / window_ms,
-        100 * compute_ms_ / window_ms, timing_.has_timestamps() ? "GPU timestamps" : "Queue latency estimate");
+        budget_.target_fps(), frame, FrameBudget::ms_per_second * completed_vectors_ / window_ms,
+        percent_scale * compute_ms_ / window_ms, timing_.has_timestamps() ? "GPU timestamps" : "Queue latency estimate");
     show_metrics(metrics);
     completed_vectors_ = 0;
     compute_ms_ = 0;
