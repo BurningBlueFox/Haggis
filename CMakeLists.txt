@@ -1,6 +1,19 @@
 cmake_minimum_required(VERSION 4.5.1)
 project(Haggis LANGUAGES CXX)
 
+if(EMSCRIPTEN)
+    add_executable(haggis src/web_main.cpp)
+    set(web_shell "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html")
+    set_target_properties(haggis PROPERTIES
+        OUTPUT_NAME index
+        SUFFIX ".html"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/web"
+        LINK_DEPENDS "${web_shell}"
+    )
+    target_link_options(haggis PRIVATE "SHELL:--shell-file \"${web_shell}\"")
+    return()
+endif()
+
 add_executable(haggis src/main.cpp)
 
 include(CTest)
