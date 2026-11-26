@@ -60,11 +60,20 @@ public:
             std::clamp(allowance_ms / ms_per_group_, minimum, static_cast<double>(growth_limit_)));
     }
 
-    void record_completion(std::uint32_t groups, double elapsed_ms)
+    [[nodiscard]] double estimated_cost(std::uint32_t groups) const
+    {
+        return groups * ms_per_group_;
+    }
+
+    void spend_credit(double elapsed_ms)
+    {
+        credit_ = std::max(0.0, credit_ - elapsed_ms);
+    }
+
+    void observe_cost(std::uint32_t groups, double elapsed_ms)
     {
         if (groups == 0 || !std::isfinite(elapsed_ms) || elapsed_ms <= 0) return;
 
-        credit_ = std::max(0.0, credit_ - elapsed_ms);
         const double measured_ms = elapsed_ms / groups;
         ms_per_group_ = std::max(min_group_cost_ms, std::lerp(ms_per_group_, measured_ms, sample_weight));
         growth_limit_ = std::min(max_groups, groups * max_chunk_growth);

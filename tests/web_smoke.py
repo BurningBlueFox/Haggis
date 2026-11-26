@@ -10,6 +10,34 @@ from threading import Thread
 from playwright.sync_api import expect, sync_playwright
 
 
+def verify_delayed_timestamp_readback(page):
+    # Hold one mapped result while the animation loop keeps drawing.
+    page.evaluate("""() => {
+        const state = globalThis.timestampProbe = { submissions: 0, release: null };
+        const submit = GPUQueue.prototype.submit;
+        const mapAsync = GPUBuffer.prototype.mapAsync;
+        GPUQueue.prototype.submit = function (...args) {
+            state.submissions++;
+            return submit.apply(this, args);
+        };
+        GPUBuffer.prototype.mapAsync = function (...args) {
+            const result = mapAsync.apply(this, args);
+            return result.then(value => {
+                GPUBuffer.prototype.mapAsync = mapAsync;
+                return new Promise(resolve => {
+                    state.release = () => resolve(value);
+                });
+            });
+        };
+    }""")
+    page.wait_for_function("timestampProbe.release !== null")
+    submissions = page.evaluate("timestampProbe.submissions")
+    try:
+        page.wait_for_function("count => timestampProbe.submissions >= count", arg=submissions + 8)
+    finally:
+        page.evaluate("timestampProbe.release()")
+
+
 def exercise(browser, site, *, timestamps):
     page = browser.new_page()
     errors = []
@@ -32,6 +60,8 @@ def exercise(browser, site, *, timestamps):
     expect(metrics).to_contain_text(re.compile(r"\b[1-9]\d* vectors/s"))
     page.locator("#compute").uncheck()
     expect(metrics).to_contain_text(re.compile(r"\b0 vectors/s"))
+    if timestamps:
+        verify_delayed_timestamp_readback(page)
     canvas = page.locator("#canvas")
     first = canvas.screenshot()
     # Rendering continues after compute pauses. Two distinct images verify motion.

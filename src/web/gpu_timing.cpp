@@ -1,13 +1,14 @@
 #include "gpu_timing.h"
 
-#include <emscripten.h>
-
 #include <array>
 #include <cstring>
 #include <utility>
 
 namespace haggis::web {
 namespace {
+
+constexpr unsigned render_sample_interval = 30;
+constexpr unsigned compute_sample_interval = 8;
 
 enum TimestampSlot : std::uint32_t {
     render_start,
@@ -52,83 +53,58 @@ void GpuTiming::initialize(const Gpu& gpu)
     compute_stamp_ = {.querySet = queries_, .beginningOfPassWriteIndex = compute_start, .endOfPassWriteIndex = compute_end};
 }
 
-void GpuTiming::submit(Gpu& gpu, const wgpu::CommandEncoder& encoder, std::uint32_t compute_groups)
+bool GpuTiming::should_sample(std::uint32_t groups)
 {
-    if (!waiting_ && queries_) {
-        encode_timestamp_copy(encoder, compute_groups);
-    }
-    const auto commands = encoder.Finish();
-    gpu.queue().Submit(1, &commands);
+    if (!has_timestamps() || reading_) return false;
 
-    if (waiting_) {
-        draw_queued_ = true;
-        return;
+    auto& countdown = groups ? compute_countdown_ : render_countdown_;
+    if (countdown) {
+        --countdown;
+        return false;
     }
-    waiting_ = true;
-    if (queries_) {
-        read_timestamps(gpu, compute_groups);
-    } else {
-        wait_for_queue(gpu, compute_groups);
-    }
+    const auto interval = groups ? compute_sample_interval : render_sample_interval;
+    countdown = interval - 1;
+    return true;
 }
 
-void GpuTiming::encode_timestamp_copy(const wgpu::CommandEncoder& encoder, std::uint32_t groups) const
+void GpuTiming::encode_readback(const wgpu::CommandEncoder& encoder, std::uint32_t groups) const
 {
     const auto count = timestamp_count(groups);
     encoder.ResolveQuerySet(queries_, render_start, count, resolved_, 0);
     encoder.CopyBufferToBuffer(resolved_, 0, readback_, 0, timestamp_bytes(count));
 }
 
-void GpuTiming::read_timestamps(Gpu& gpu, std::uint32_t groups)
+void GpuTiming::read_sample(std::uint32_t groups)
 {
+    reading_ = true;
     const auto bytes = timestamp_bytes(timestamp_count(groups));
     readback_.MapAsync(wgpu::MapMode::Read, 0, bytes, asynchronous,
-        [this, &gpu, groups](wgpu::MapAsyncStatus status, wgpu::StringView detail) {
-            if (status != wgpu::MapAsyncStatus::Success) {
-                gpu.fail("Could not read WebGPU timing data.", detail);
-                return;
+        [this, groups](wgpu::MapAsyncStatus status, wgpu::StringView) {
+            if (status == wgpu::MapAsyncStatus::Success) {
+                complete_read(groups);
+            } else {
+                queries_ = nullptr;
             }
-
-            complete_timestamp_read(groups);
+            reading_ = false;
         });
 }
 
-void GpuTiming::complete_timestamp_read(std::uint32_t groups)
+void GpuTiming::complete_read(std::uint32_t groups)
 {
     TimestampValues stamps{};
     const auto bytes = timestamp_bytes(timestamp_count(groups));
     std::memcpy(stamps.data(), readback_.GetConstMappedRange(0, bytes), bytes);
     readback_.Unmap();
-    complete({
+    sample_ = GpuSample{
         .compute_groups = groups,
         .render_ms = elapsed_ms(stamps[render_start], stamps[render_end]),
         .compute_ms = groups ? elapsed_ms(stamps[compute_start], stamps[compute_end]) : std::nullopt,
-    });
+    };
 }
 
-void GpuTiming::wait_for_queue(Gpu& gpu, std::uint32_t groups)
+std::optional<GpuSample> GpuTiming::take_sample()
 {
-    const double submitted_at = emscripten_get_now();
-    gpu.queue().OnSubmittedWorkDone(asynchronous,
-        [this, &gpu, groups, submitted_at](wgpu::QueueWorkDoneStatus status, wgpu::StringView detail) {
-            if (status != wgpu::QueueWorkDoneStatus::Success) {
-                gpu.fail("The WebGPU queue stopped.", detail);
-                return;
-            }
-            complete({.compute_groups = groups, .queue_ms = emscripten_get_now() - submitted_at});
-        });
-}
-
-void GpuTiming::complete(CompletedFrame frame)
-{
-    completed_ = frame;
-    waiting_ = false;
-    draw_queued_ = false;
-}
-
-std::optional<CompletedFrame> GpuTiming::take_completed()
-{
-    return std::exchange(completed_, std::nullopt);
+    return std::exchange(sample_, std::nullopt);
 }
 
 }

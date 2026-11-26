@@ -12,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 
 namespace haggis::web {
 namespace {
@@ -22,6 +23,7 @@ constexpr double minimum_measured_cost_ms = 0.05;
 constexpr double initial_render_estimate_ms = 1.0;
 constexpr double animation_wrap_seconds = 3600.0;
 constexpr unsigned render_sample_interval_frames = 30;
+constexpr unsigned max_frames_in_flight = 2;
 constexpr std::size_t metrics_text_capacity = 192;
 constexpr std::size_t sample_capacity = 512;
 constexpr std::size_t frame_percentile = 95;
@@ -70,7 +72,9 @@ private:
     double record_draw(double now);
     void submit_frame(double now, std::uint32_t groups);
     std::uint32_t schedule_compute(double elapsed_ms);
-    void collect_completed_frame();
+    void track_submission(std::uint32_t groups);
+    void complete_submission(std::uint32_t groups, std::optional<double> queue_ms);
+    void collect_gpu_sample();
     void reset_metrics(double now);
     void report_metrics(double now);
 
@@ -88,6 +92,8 @@ private:
     double compute_ms_ = 0;
     std::uint64_t completed_vectors_ = 0;
     unsigned frames_until_render_sample_ = 0;
+    unsigned frames_in_flight_ = 0;
+    bool compute_in_flight_ = false;
 };
 
 void App::start()
@@ -113,10 +119,11 @@ bool App::animate(double now)
     if (gpu_.failed()) return false;
 
     observe_refresh(now);
-    collect_completed_frame();
+    collect_gpu_sample();
     if (now - window_start_ >= metrics_interval_ms) report_metrics(now);
 
-    if (now + FrameBudget::frame_tolerance_ms < next_draw_ || !timing_.can_submit()) return true;
+    if (now + FrameBudget::frame_tolerance_ms < next_draw_ ||
+        frames_in_flight_ >= max_frames_in_flight) return true;
 
     const double elapsed_ms = record_draw(now);
     const auto groups = schedule_compute(elapsed_ms);
@@ -155,7 +162,7 @@ std::uint32_t App::schedule_compute(double elapsed_ms)
 {
     if (!compute_enabled()) return 0;
     budget_.add_frame_credit(elapsed_ms);
-    if (timing_.busy()) return 0;
+    if (compute_in_flight_) return 0;
 
     // A render-only sample isolates render time when only queue timing is available.
     if (!timing_.has_timestamps() && frames_until_render_sample_ == 0) {
@@ -175,29 +182,66 @@ void App::submit_frame(double now, std::uint32_t groups)
     }
 
     const auto seconds = static_cast<float>(std::fmod(now / FrameBudget::ms_per_second, animation_wrap_seconds));
+    const bool sample = timing_.should_sample(groups);
     const auto encoder = gpu_.device().CreateCommandEncoder();
-    triangle_.encode_draw(gpu_, encoder, texture, seconds, timing_.render_timestamps());
-    // Queue order lets the draw read the previous color before compute updates it.
-    if (groups) inference_.encode_chunk(gpu_, encoder, seconds, groups, timing_.compute_timestamps());
-    timing_.submit(gpu_, encoder, groups);
+    triangle_.encode_draw(gpu_, encoder, texture, seconds, sample ? timing_.render_timestamps() : nullptr);
+    // Queue order lets this draw read the current color before compute updates it.
+    if (groups) {
+        inference_.encode_chunk(gpu_, encoder, seconds, groups, sample ? timing_.compute_timestamps() : nullptr);
+    }
+    if (sample) timing_.encode_readback(encoder, groups);
+
+    const auto commands = encoder.Finish();
+    gpu_.queue().Submit(1, &commands);
+    track_submission(groups);
+    if (sample) timing_.read_sample(groups);
 }
 
-void App::collect_completed_frame()
+void App::track_submission(std::uint32_t groups)
 {
-    const auto frame = timing_.take_completed();
-    if (!frame) return;
+    ++frames_in_flight_;
+    if (groups) compute_in_flight_ = true;
+    const auto submitted_at = timing_.has_timestamps() ? std::nullopt : std::optional{emscripten_get_now()};
 
-    if (frame->render_ms) {
-        render_times_.add(*frame->render_ms);
-    } else if (!timing_.has_timestamps() && frame->compute_groups == 0) {
-        render_times_.add(frame->queue_ms);
+    gpu_.queue().OnSubmittedWorkDone(asynchronous,
+        [this, groups, submitted_at](wgpu::QueueWorkDoneStatus status, wgpu::StringView detail) {
+            if (status != wgpu::QueueWorkDoneStatus::Success) {
+                gpu_.fail("The WebGPU queue stopped.", detail);
+                return;
+            }
+            const auto queue_ms = submitted_at.transform([](double start) { return emscripten_get_now() - start; });
+            complete_submission(groups, queue_ms);
+        });
+}
+
+void App::complete_submission(std::uint32_t groups, std::optional<double> queue_ms)
+{
+    --frames_in_flight_;
+    if (!groups) {
+        if (queue_ms) render_times_.add(*queue_ms);
+        return;
     }
-    if (frame->compute_groups == 0) return;
 
-    const double cost = frame->compute_ms.value_or(std::max(0.0, frame->queue_ms - render_ms_));
+    compute_in_flight_ = false;
+    double cost = budget_.estimated_cost(groups);
+    if (queue_ms) {
+        cost = std::max(minimum_measured_cost_ms, *queue_ms - render_ms_);
+        budget_.observe_cost(groups, cost);
+    }
+    budget_.spend_credit(cost);
     compute_ms_ += cost;
-    budget_.record_completion(frame->compute_groups, std::max(minimum_measured_cost_ms, cost));
-    completed_vectors_ += frame->compute_groups * Inference::vectors_per_group;
+    completed_vectors_ += groups * Inference::vectors_per_group;
+}
+
+void App::collect_gpu_sample()
+{
+    const auto sample = timing_.take_sample();
+    if (!sample) return;
+
+    if (sample->render_ms) render_times_.add(*sample->render_ms);
+    if (sample->compute_ms) {
+        budget_.observe_cost(sample->compute_groups, std::max(minimum_measured_cost_ms, *sample->compute_ms));
+    }
 }
 
 void App::reset_metrics(double now)
@@ -221,7 +265,7 @@ void App::report_metrics(double now)
 
     char metrics[metrics_text_capacity];
     std::snprintf(metrics, sizeof(metrics),
-        "Target %d FPS  ·  Frame p95 %.1f ms  ·  %.0f vectors/s  ·  Compute %.1f%%  ·  %s",
+        "Target %d FPS  ·  Frame p95 %.1f ms  ·  %.0f vectors/s  ·  Compute ~%.1f%%  ·  %s",
         budget_.target_fps(), frame, FrameBudget::ms_per_second * completed_vectors_ / window_ms,
         percent_scale * compute_ms_ / window_ms, timing_.has_timestamps() ? "GPU timestamps" : "Queue latency estimate");
     show_metrics(metrics);
