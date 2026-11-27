@@ -37,4 +37,6 @@ The frame loop starts at 120 FPS and uses observed display cadence, frame interv
 
 The page reports p95 frame interval, vectors completed per second, and estimated compute share. Up to two frames and one compute chunk can be outstanding. Queue completion releases those limits. Optional GPU timestamp samples calibrate the scheduler without holding up submissions. When timestamps are unavailable, the scheduler estimates costs from queue completion latency and periodic render-only samples. Achievable frame rate and compute share depend on the GPU and browser.
 
+Open **GPU debug information** below the canvas to see the active WebGPU adapter, supported and enabled features, and adapter and device limits. The browser may withhold hardware identifiers.
+
 GitHub Actions builds the browser target for pull requests and deploys it on pushes to `main`. In the repository's **Settings → Pages**, set **Source** to **GitHub Actions** to enable deployment at https://burningbluefox.github.io/Haggis/.

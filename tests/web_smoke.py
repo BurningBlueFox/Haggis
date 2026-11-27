@@ -38,6 +38,39 @@ def verify_delayed_timestamp_readback(page):
         page.evaluate("timestampProbe.release()")
 
 
+def verify_gpu_debug(page, *, timestamps):
+    panel = page.get_by_text("GPU debug information", exact=True)
+    panel.click()
+    report = page.get_by_label("WebGPU adapter and device details")
+    expect(report).to_be_visible()
+    text = report.inner_text()
+
+    assert "Adapter information" in text
+    assert re.search(r"^Vendor: .+$", text, re.MULTILINE)
+    assert re.search(r"^Description: .+$", text, re.MULTILINE)
+    assert "Backend: BackendType::WebGPU" in text
+    assert "Adapter features" in text and "Enabled device features" in text
+    enabled = text.split("Enabled device features", 1)[1].split("WebGPU limits", 1)[0]
+    assert ("FeatureName::TimestampQuery" in enabled) == timestamps
+    limits = re.search(r"^maxTextureDimension2D\s+(\d+)\s+(\d+)$", text, re.MULTILINE)
+    assert limits, text
+    adapter_limit, device_limit = map(int, limits.groups())
+    assert adapter_limit >= device_limit > 0
+    panel.click()
+
+
+def verify_unavailable_gpu(browser, site):
+    page = browser.new_page()
+    page.add_init_script("Object.defineProperty(navigator, 'gpu', { value: undefined })")
+    page.goto(site)
+    expect(page.locator("#status")).to_have_text("WebGPU is unavailable in this browser.")
+    page.get_by_text("GPU debug information", exact=True).click()
+    expect(page.get_by_label("WebGPU adapter and device details")).to_have_text(
+        "WebGPU is unavailable in this browser."
+    )
+    page.close()
+
+
 def exercise(browser, site, *, timestamps):
     page = browser.new_page()
     errors = []
@@ -56,6 +89,7 @@ def exercise(browser, site, *, timestamps):
     status = page.locator("#status")
     metrics = page.locator("#metrics")
     expect(status).to_have_text("WebGPU ready")
+    verify_gpu_debug(page, timestamps=timestamps)
     expect(metrics).to_contain_text("GPU timestamps" if timestamps else "Queue latency estimate")
     expect(metrics).to_contain_text(re.compile(r"\b[1-9]\d* vectors/s"))
     page.locator("#compute").uncheck()
@@ -90,4 +124,5 @@ if __name__ == "__main__":
         expect.set_options(timeout=15000)
         exercise(browser, site, timestamps=True)
         exercise(browser, site, timestamps=False)
+        verify_unavailable_gpu(browser, site)
         browser.close()

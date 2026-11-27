@@ -22,6 +22,22 @@
       background: #030712;
       border: 1px solid #374151;
     }
+    details {
+      margin-block: 1rem;
+      padding: .65rem .8rem;
+      border: 1px solid #374151;
+      border-radius: .35rem;
+      background: #0f172a;
+    }
+    summary { cursor: pointer; }
+    #gpu-debug {
+      max-height: 24rem;
+      overflow: auto;
+      margin: .65rem 0 0;
+      padding: .65rem;
+      background: #030712;
+      color: #d1d5db;
+    }
   </style>
 </head>
 <body>
@@ -31,6 +47,10 @@
     <p id="status" role="status">Loading Haggis…</p>
     <label><input type="checkbox" id="compute" checked> Run inference workload</label>
     <p id="metrics"></p>
+    <details>
+      <summary>GPU debug information</summary>
+      <pre id="gpu-debug" tabindex="0" aria-label="WebGPU adapter and device details">Waiting for WebGPU…</pre>
+    </details>
     <noscript>Enable JavaScript to run Haggis.</noscript>
   </main>
   <script>
