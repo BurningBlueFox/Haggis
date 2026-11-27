@@ -55,10 +55,23 @@
   </main>
   <script>
     const statusElement = document.getElementById("status");
+    const gpuDebugElement = document.getElementById("gpu-debug");
+    const pendingGpuDebug = gpuDebugElement.textContent;
+    function showStartupError(message) {
+      statusElement.textContent = message;
+      if (gpuDebugElement.textContent === pendingGpuDebug) {
+        gpuDebugElement.textContent = message;
+      }
+    }
+    window.addEventListener("error", (event) => {
+      if (event.target instanceof HTMLScriptElement) {
+        showStartupError("Could not load Haggis. Reload the page to try again.");
+      }
+    }, true);
     var Module = {
       canvas: document.getElementById("canvas"),
       print(message) { statusElement.textContent = message; },
-      onAbort() { statusElement.textContent = "Haggis could not start."; }
+      onAbort() { showStartupError("Haggis could not start. Reload the page to try again."); }
     };
   </script>
   {{{ SCRIPT }}}

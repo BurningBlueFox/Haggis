@@ -71,6 +71,16 @@ def verify_unavailable_gpu(browser, site):
     page.close()
 
 
+def verify_failed_download(browser, site, extension, message):
+    page = browser.new_page()
+    page.route(f"**/*.{extension}", lambda route: route.abort())
+    page.goto(site)
+    expect(page.locator("#status")).to_have_text(message)
+    page.get_by_text("GPU debug information", exact=True).click()
+    expect(page.get_by_label("WebGPU adapter and device details")).to_have_text(message)
+    page.close()
+
+
 def exercise(browser, site, *, timestamps):
     page = browser.new_page()
     errors = []
@@ -125,4 +135,6 @@ if __name__ == "__main__":
         exercise(browser, site, timestamps=True)
         exercise(browser, site, timestamps=False)
         verify_unavailable_gpu(browser, site)
+        verify_failed_download(browser, site, "js", "Could not load Haggis. Reload the page to try again.")
+        verify_failed_download(browser, site, "wasm", "Haggis could not start. Reload the page to try again.")
         browser.close()

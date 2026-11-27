@@ -49,7 +49,8 @@ jobs:
       - name: Build browser target
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
-          emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release
+          emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release \
+            -DHAGGIS_WEB_REVISION="$GITHUB_SHA"
           cmake --build build-web --parallel
       - name: Smoke-test WebGPU in Chrome
         env:
