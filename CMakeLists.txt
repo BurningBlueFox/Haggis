@@ -19,13 +19,34 @@ if(EMSCRIPTEN)
     target_compile_options(haggis PRIVATE --use-port=emdawnwebgpu)
     target_link_options(haggis PRIVATE --use-port=emdawnwebgpu)
     set(web_shell "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html")
+    set(web_output "${CMAKE_CURRENT_BINARY_DIR}/web")
+    set(HAGGIS_WEB_REVISION "" CACHE STRING "Revision for versioned deployment assets")
     set_target_properties(haggis PROPERTIES
         OUTPUT_NAME index
         SUFFIX ".html"
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/web"
+        RUNTIME_OUTPUT_DIRECTORY "${web_output}"
         LINK_DEPENDS "${web_shell}"
     )
     target_link_options(haggis PRIVATE "SHELL:--shell-file \"${web_shell}\"")
+    if(HAGGIS_WEB_REVISION)
+        # An old loader or Wasm binary must never be reused for a new page.
+        set(bundle_name "haggis-${HAGGIS_WEB_REVISION}")
+        set(bundle_dir "${CMAKE_CURRENT_BINARY_DIR}/web-bundle")
+        set_target_properties(haggis PROPERTIES
+            OUTPUT_NAME "${bundle_name}"
+            RUNTIME_OUTPUT_DIRECTORY "${bundle_dir}"
+        )
+        add_custom_command(TARGET haggis POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${web_output}"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${bundle_dir}/${bundle_name}.js"
+                "${bundle_dir}/${bundle_name}.wasm"
+                "${web_output}"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_FILE:haggis>" "${web_output}/index.html"
+            VERBATIM
+        )
+    endif()
     return()
 endif()
 

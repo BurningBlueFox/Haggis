@@ -55,10 +55,35 @@
   </main>
   <script>
     const statusElement = document.getElementById("status");
+    const gpuDebugElement = document.getElementById("gpu-debug");
+    const loadingStatus = statusElement.textContent;
+    const pendingGpuDebug = gpuDebugElement.textContent;
+    const startupError = "Haggis could not start. Reload the page to try again.";
+    function showStartupError(message, detail) {
+      statusElement.textContent = message;
+      if (gpuDebugElement.textContent === pendingGpuDebug) {
+        gpuDebugElement.textContent = detail ? message + "\n\n" + String(detail) : message;
+      }
+    }
+    function reportStartupException(reason) {
+      if (statusElement.textContent === loadingStatus) {
+        showStartupError(startupError, reason);
+      }
+    }
+    window.addEventListener("error", (event) => {
+      if (event.target instanceof HTMLScriptElement) {
+        showStartupError("Could not load Haggis. Reload the page to try again.");
+      } else if (event instanceof ErrorEvent) {
+        reportStartupException(event.error ?? event.message);
+      }
+    }, true);
+    window.addEventListener("unhandledrejection", (event) => {
+      reportStartupException(event.reason);
+    });
     var Module = {
       canvas: document.getElementById("canvas"),
       print(message) { statusElement.textContent = message; },
-      onAbort() { statusElement.textContent = "Haggis could not start."; }
+      onAbort(reason) { showStartupError(startupError, reason); }
     };
   </script>
   {{{ SCRIPT }}}
