@@ -1,5 +1,7 @@
 #include "gpu.h"
 
+#include "gpu_debug.h"
+
 #include <emscripten.h>
 #include <emscripten/html5.h>
 
@@ -39,6 +41,7 @@ void Gpu::request_device(const wgpu::Adapter& adapter, std::function<void()> on_
             }
             device_ = std::move(device);
             queue_ = device_.GetQueue();
+            report_gpu_debug(adapter, device_);
             if (configure_canvas(adapter) && !failed_) {
                 on_ready();
             }
@@ -93,6 +96,7 @@ void Gpu::fail(const char* reason, wgpu::StringView detail)
 {
     if (std::exchange(failed_, true)) return;
     std::puts(reason); // The HTML shell displays stdout in the status element.
+    if (!device_) show_gpu_debug(reason);
     if (detail.data) {
         std::fprintf(stderr, "%.*s\n", static_cast<int>(detail.length), detail.data);
     }

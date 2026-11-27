@@ -10,6 +10,7 @@ if(EMSCRIPTEN)
         src/web_main.cpp
         src/web/app.cpp
         src/web/gpu.cpp
+        src/web/gpu_debug.cpp
         src/web/gpu_timing.cpp
         src/web/inference.cpp
         src/web/triangle.cpp
